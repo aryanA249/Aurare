@@ -24,6 +24,7 @@ export type SiteContent = {
   heroSubtext: string;
   heroCta: string;
   heroImageUrl: string;
+  heroVideoUrl: string;
   valueProps: string[];
   collections: Collection[];
   fabricStories: FabricStory[];
@@ -40,6 +41,7 @@ export const defaultSiteContent: SiteContent = {
   heroSubtext: "A curated sleep experience crafted from the world's finest natural fibers.",
   heroCta: "Explore Collections",
   heroImageUrl: "",
+  heroVideoUrl: "",
   valueProps: defaultValueProps,
   collections: defaultCollections,
   fabricStories: defaultFabricStories,
@@ -51,8 +53,12 @@ export const defaultSiteContent: SiteContent = {
 };
 
 export function mergeWithDefaultSiteContent(payload: Partial<SiteContent> | null | undefined) {
+  if (!payload) {
+    return defaultSiteContent;
+  }
+
   return {
     ...defaultSiteContent,
-    ...(payload ?? {}),
+    ...payload,
   } satisfies SiteContent;
 }

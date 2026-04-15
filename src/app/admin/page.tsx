@@ -19,6 +19,15 @@ function updateAt<T>(items: T[], index: number, updater: (item: T) => T) {
 const MAX_IMAGE_DIMENSION = 1800;
 const OUTPUT_QUALITY = 0.82;
 const STORAGE_UPLOAD_TIMEOUT_MS = 20_000;
+const VIDEO_UPLOAD_API_TIMEOUT_MS = 10 * 60_000;
+const MAX_HERO_VIDEO_SIZE_MB = 80;
+const MAX_HERO_VIDEO_SIZE_BYTES = MAX_HERO_VIDEO_SIZE_MB * 1024 * 1024;
+
+type UploadProgress = {
+  percentage: number;
+  bytesTransferred: number;
+  totalBytes: number;
+};
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string) {
   return new Promise<T>((resolve, reject) => {
@@ -42,7 +51,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error("Unable to read image"));
+    };
     reader.onerror = () => reject(new Error("Unable to read image"));
     reader.readAsDataURL(file);
   });
@@ -78,12 +94,12 @@ async function compressImageFile(file: File) {
   canvas.height = targetHeight;
 
   const context = canvas.getContext("2d");
-  if (!context) {
-    return sourceDataUrl;
+  if (context) {
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+    return canvas.toDataURL("image/jpeg", OUTPUT_QUALITY);
   }
 
-  context.drawImage(image, 0, 0, targetWidth, targetHeight);
-  return canvas.toDataURL("image/jpeg", OUTPUT_QUALITY);
+  return sourceDataUrl;
 }
 
 async function uploadImageToFirebaseStorage(file: File) {
@@ -121,9 +137,7 @@ async function uploadImageToFirebaseStorage(file: File) {
     canvas.height = targetHeight;
 
     const context = canvas.getContext("2d");
-    if (!context) {
-      await uploadWithTimeout(file, file.type);
-    } else {
+    if (context) {
       context.drawImage(image, 0, 0, targetWidth, targetHeight);
       const blob = await new Promise<Blob>((resolve) => {
         canvas.toBlob(
@@ -134,6 +148,8 @@ async function uploadImageToFirebaseStorage(file: File) {
       });
 
       await uploadWithTimeout(blob, "image/jpeg");
+    } else {
+      await uploadWithTimeout(file, file.type);
     }
   }
 
@@ -141,6 +157,76 @@ async function uploadImageToFirebaseStorage(file: File) {
     getDownloadURL(storageRef),
     STORAGE_UPLOAD_TIMEOUT_MS,
     "Image URL generation timed out",
+  );
+}
+
+async function uploadVideoToFirebaseStorage(
+  file: File,
+  onProgress?: (progress: UploadProgress) => void,
+) {
+  return withTimeout(
+    new Promise<string>((resolve, reject) => {
+      const formData = new FormData();
+      formData.append("video", file);
+
+      const request = new XMLHttpRequest();
+      request.open("POST", "/api/admin/upload-video");
+
+      request.upload.onprogress = (event) => {
+        if (!event.lengthComputable) {
+          return;
+        }
+
+        const percentage = Math.round((event.loaded / Math.max(event.total, 1)) * 100);
+        onProgress?.({
+          percentage: Math.min(99, Math.max(0, percentage)),
+          bytesTransferred: event.loaded,
+          totalBytes: event.total,
+        });
+      };
+
+      request.onerror = () => {
+        reject(new Error("Network error while uploading video."));
+      };
+
+      request.onabort = () => {
+        reject(new Error("Video upload was aborted."));
+      };
+
+      request.onload = () => {
+        const rawResponse = request.responseText;
+        let payload: { url?: string; error?: string } | null = null;
+
+        try {
+          payload = rawResponse
+            ? (JSON.parse(rawResponse) as { url?: string; error?: string })
+            : null;
+        } catch {
+          payload = null;
+        }
+
+        if (request.status >= 200 && request.status < 300 && payload?.url) {
+          onProgress?.({
+            percentage: 100,
+            bytesTransferred: file.size,
+            totalBytes: file.size,
+          });
+          resolve(payload.url);
+          return;
+        }
+
+        if (request.status === 401) {
+          reject(new Error("Session expired. Please sign in again."));
+          return;
+        }
+
+        reject(new Error(payload?.error ?? `Video upload failed (${request.status}).`));
+      };
+
+      request.send(formData);
+    }),
+    VIDEO_UPLOAD_API_TIMEOUT_MS,
+    "Video upload timed out. Try a smaller file or stronger connection.",
   );
 }
 
@@ -270,7 +356,7 @@ export default function AdminPage() {
       <section className="mt-10 grid gap-6">
         <EditablePanel
           title="Hero"
-          description="Headline, subtext, CTA label, and hero image URL."
+          description="Headline, subtext, CTA label, hero image URL, and hero background video URL."
         >
           <div className="grid gap-4">
             <input
@@ -300,6 +386,20 @@ export default function AdminPage() {
               onUploaded={(dataUrl) => {
                 setContent({ ...content, heroImageUrl: dataUrl });
                 setMessage("Hero image uploaded.");
+              }}
+            />
+            <input
+              value={content.heroVideoUrl}
+              onChange={(event) => setContent({ ...content, heroVideoUrl: event.target.value })}
+              className="rounded-xl border border-neutral-300 bg-white px-3 py-2"
+              placeholder="Hero video URL (Google Drive share link also works)"
+            />
+            <VideoUploadControl
+              buttonLabel="Upload Hero Video"
+              onUploadStatus={(status) => setMessage(status)}
+              onUploaded={(videoUrl) => {
+                setContent({ ...content, heroVideoUrl: videoUrl });
+                setMessage("Hero video uploaded.");
               }}
             />
           </div>
@@ -697,11 +797,11 @@ function EditablePanel({
   title,
   description,
   children,
-}: {
+}: Readonly<{
   title: string;
   description: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <article className="rounded-3xl border border-neutral-200 bg-white/80 p-5 md:p-6">
       <header>
@@ -713,17 +813,97 @@ function EditablePanel({
   );
 }
 
+function VideoUploadControl({
+  onUploaded,
+  onUploadStatus,
+  buttonLabel,
+  className,
+}: Readonly<{
+  onUploaded: (videoUrl: string) => void;
+  onUploadStatus?: (message: string) => void;
+  buttonLabel: string;
+  className?: string;
+}>) {
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string>("");
+  const [uploadStateText, setUploadStateText] = useState<string>("");
+
+  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setSelectedFileName(file.name);
+
+    if (file.size > MAX_HERO_VIDEO_SIZE_BYTES) {
+      onUploadStatus?.(
+        `Video is too large (${Math.ceil(file.size / (1024 * 1024))} MB). Please keep it under ${MAX_HERO_VIDEO_SIZE_MB} MB.`,
+      );
+      setUploadStateText("Upload blocked: file exceeds size limit.");
+      event.target.value = "";
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadStateText("Uploading video...");
+    setUploadProgress({ percentage: 0, bytesTransferred: 0, totalBytes: file.size });
+    try {
+      const uploadedUrl = await uploadVideoToFirebaseStorage(file, (progress) => {
+        setUploadProgress(progress);
+      });
+
+      onUploaded(uploadedUrl);
+      setUploadProgress({ percentage: 100, bytesTransferred: file.size, totalBytes: file.size });
+      setUploadStateText("Upload complete.");
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : "Video upload failed or timed out. Try a smaller file or check Storage rules.";
+      setUploadStateText("Upload failed.");
+      onUploadStatus?.(errorMessage);
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(null);
+      event.target.value = "";
+    }
+  };
+
+  const uploadedMb = uploadProgress
+    ? (uploadProgress.bytesTransferred / (1024 * 1024)).toFixed(1)
+    : null;
+  const totalMb = uploadProgress
+    ? (Math.max(uploadProgress.totalBytes, 1) / (1024 * 1024)).toFixed(1)
+    : null;
+
+  return (
+    <div className={className}>
+      <label className="inline-flex cursor-pointer rounded-full border border-neutral-400 px-4 py-2 text-xs tracking-[0.12em] text-neutral-700 transition hover:bg-neutral-900 hover:text-neutral-100">
+        {isUploading && uploadProgress
+          ? `Uploading... ${uploadProgress.percentage}% (${uploadedMb}/${totalMb} MB)`
+          : buttonLabel}
+        <input type="file" accept="video/*" className="hidden" onChange={handleUpload} />
+      </label>
+      <p className="mt-2 text-xs text-neutral-600">
+        {selectedFileName ? `Selected: ${selectedFileName}` : "No file selected"}
+      </p>
+      {uploadStateText ? <p className="mt-1 text-xs text-neutral-600">{uploadStateText}</p> : null}
+    </div>
+  );
+}
+
 function ImageUploadControl({
   onUploaded,
   onUploadStatus,
   buttonLabel,
   className,
-}: {
+}: Readonly<{
   onUploaded: (dataUrl: string) => void;
   onUploadStatus?: (message: string) => void;
   buttonLabel: string;
   className?: string;
-}) {
+}>) {
   const [isUploading, setIsUploading] = useState(false);
 
   const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
