@@ -3,6 +3,7 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAnalytics, isSupported } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 function getFirebaseClientConfig() {
@@ -52,8 +53,13 @@ export function getFirebaseClientStorage() {
   return app ? getStorage(app) : null;
 }
 
+export function getFirebaseClientFirestore() {
+  const app = getFirebaseClientApp();
+  return app ? getFirestore(app) : null;
+}
+
 export async function getFirebaseClientAnalytics() {
-  if (typeof window === "undefined") {
+  if (globalThis.window === undefined) {
     return null;
   }
 

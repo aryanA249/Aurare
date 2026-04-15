@@ -10,10 +10,10 @@ let cachedApp: App | null = null;
 function getFirebaseAdminCredentials() {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.split("\\n").join("\n");
   const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
 
-  if (!projectId || !clientEmail || !privateKey || !storageBucket) {
+  if (!projectId || !clientEmail || !privateKey) {
     return null;
   }
 
@@ -40,7 +40,7 @@ export function getFirebaseAdminApp() {
   }
 
   cachedApp = getApps().length
-    ? getApps()[0]!
+    ? getApps()[0]
     : initializeApp({
         credential: cert({
           projectId: credentials.projectId,
@@ -65,5 +65,9 @@ export function getFirebaseAdminFirestore() {
 
 export function getFirebaseAdminStorage() {
   const app = getFirebaseAdminApp();
-  return app ? getStorage(app) : null;
+  if (!app || !process.env.FIREBASE_STORAGE_BUCKET) {
+    return null;
+  }
+
+  return getStorage(app);
 }

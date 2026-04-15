@@ -232,7 +232,7 @@ async function uploadVideoToFirebaseStorage(
 
 export default function AdminPage() {
   const router = useRouter();
-  const { content, setContent, resetContent } = useSiteContent();
+  const { content, setContent, resetContent, isRemoteConfigured } = useSiteContent();
   const [message, setMessage] = useState("Edit content, then click Save to publish.");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -350,6 +350,17 @@ export default function AdminPage() {
           <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Pricing Snapshot</p>
           <p className="mt-3 font-serif text-3xl text-neutral-900">{formatINR(totalProductValue)}</p>
           <p className="mt-1 text-sm text-neutral-600">Sum of current base prices</p>
+        </article>
+        <article className="rounded-2xl border border-neutral-200 bg-white/80 p-5">
+          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Sync Status</p>
+          <p className="mt-3 font-serif text-3xl text-neutral-900">
+            {isRemoteConfigured ? "Remote sync on" : "Local draft only"}
+          </p>
+          <p className="mt-1 text-sm text-neutral-600">
+            {isRemoteConfigured
+              ? "Click Save Changes to publish updates to all devices."
+              : "This browser is saving only to local draft storage."}
+          </p>
         </article>
       </section>
 
